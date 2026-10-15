@@ -19,7 +19,7 @@ public:
     {   
         std::uint64_t file_size {0}; 
         std::uint32_t file_name_len {0};
-        std::array<uint32_t, 32> sum{};
+        std::array<uint32_t, 32> sum{};  // TODO(v0.3.0): SHA-256 integrity check (unused)
     };
     #pragma pack(pop)
 
@@ -34,6 +34,43 @@ public:
 
     
     MetaData metadata;
+
+
+    // File name security controller 
+    // TODO(v0.3.0): switch to whitelist validation (alnum, '.', '-', '_')
+    // TODO(v0.3.0): reject ':' instead of truncating (ADS)
+    // TODO(v0.3.0): take const std::string& instead of copy
+    std::string safeFileName(std::string fileName){
+
+        // Path Traversal Issue
+        size_t lastSlash = fileName.rfind('/');
+        size_t lastBackSlash = fileName.rfind('\\');
+        
+        size_t lastSeperator = std::string::npos; // No position
+        std::string safeFileName; 
+
+        // TODO (v0.3.0) use find_last_of()
+        if(lastSlash != std::string::npos && lastBackSlash != std::string::npos){
+            lastSeperator = std::max(lastSlash, lastBackSlash);
+        } else{
+            lastSeperator = (lastSlash != std::string::npos) ? lastSlash : lastBackSlash;
+        }
+
+        // Path Traverse solution
+        safeFileName =  (lastSeperator != std::string::npos) ? (fileName.substr(lastSeperator + 1)): (fileName.substr(lastBackSlash + 1));
+             
+        // ADS Issue solution
+        safeFileName = (safeFileName.find(':') != std::string::npos) ? (safeFileName.substr(0, safeFileName.find(':'))): safeFileName;
+        
+        // Zero Byte Injection solution
+        safeFileName = (safeFileName.find('\0') != std::string::npos) ? throw std::runtime_error("[!] Zero Byte Injection Detected!!!..."): safeFileName;
+        
+        // Path Manipulation solution
+        safeFileName = (safeFileName.empty()) ? throw std::runtime_error("[!] Empty Filen Name Detected!!!..."): safeFileName;
+
+        return safeFileName;
+    }
+
 
     // Reads a file in 64 KB chunks and prints progress
     void file_converter(){
@@ -157,7 +194,7 @@ public:
         // |                  |
         // v                  v
         // [---  Header --- , --- File Name --- ]        
-        strncpy(new_metadata.file_name, reinterpret_cast<const char*> (buffer + sizeof(Header)),metadata.header.file_name_len); // After that rest of the chars will be garbage. Fot that reason
+        strncpy(new_metadata.file_name, reinterpret_cast<const char*> (buffer + sizeof(Header)),metadata.header.file_name_len); // After that rest of the chars will be garbage. 
         new_metadata.file_name[new_metadata.header.file_name_len] = '\0';
         
 
@@ -306,7 +343,7 @@ bool receiver(uint16_t port){
         closesocket(sock);
         return false;
     }
-    
+    // TODO(v0.3.0): validate file_name_len (1-255) and file_size before allocation
     // Read the file name
     std::string filename(header.file_name_len, '\0');
     if(!recv_all(client_sock, &filename[0], header.file_name_len)){
@@ -319,8 +356,9 @@ bool receiver(uint16_t port){
     std::cout << "[+] Incoming file: " << filename << " (" << header.file_size << " byte)\n";
 
 
-    // TODO(v0.2): path traversal - sanitize filename
 
+    // TODO(v0.3.0): catch exceptions from safeFileName (uncaught throw -> DoS)
+    
     std::ofstream out_file("received_" + filename, std::ios::binary);
     if(!out_file.is_open()){
         std::cerr << "[!] The file couldnt be written to the disk...\n";
