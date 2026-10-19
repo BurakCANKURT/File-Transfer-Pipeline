@@ -346,14 +346,21 @@ bool receiver(uint16_t port){
         closesocket(sock);
         return false;
     }
-    // TODO(v0.3.0): validate file_name_len (1-255) and file_size before allocation
+    // Validate file_name_len (1-255) and file_size before allocation
+
+    constexpr uint32_t MAX_NAME_LEN = 255;
+
+    if (header.file_name_len == 0 || header.file_name_len > MAX_NAME_LEN) {
+        std::cerr << "[!] Invalid file name length: " << header.file_name_len << "\n";
+        closesocket(client_sock);
+        closesocket(sock);
+        return false;
+    }
     
     std::string filename(header.file_name_len, '\0');
-        bool fileStatus = (filename[0] > 1 && filename[0] < 255) ? true : false;
-
         // Read the file name
         
-        if(&fileStatus && !recv_all(client_sock, &filename[0], header.file_name_len)){
+        if(!recv_all(client_sock, &filename[0], header.file_name_len)){
             std::cerr << "[!] File name couldnt be retrieved...\n";
             closesocket(client_sock);
             closesocket(sock);
