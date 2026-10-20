@@ -10,6 +10,8 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>   
 
+// Error Handling
+#include <stdexcept>
 
 class File
 {
@@ -19,7 +21,7 @@ public:
     {   
         std::uint64_t file_size {0}; 
         std::uint32_t file_name_len {0};
-        std::array<uint32_t, 32> sum{};  // TODO(v0.3.0): SHA-256 integrity check (unused)
+        std::array<uint32_t, 32> sum{};  // TODO(v0.4.0): SHA-256 integrity check (unused)
     };
     #pragma pack(pop)
 
@@ -37,9 +39,6 @@ public:
 
 
     // File name security controller 
-    // Switch to whitelist validation (alnum, '.', '-', '_')
-    // Reject ':' instead of truncating (ADS) +
-    // Take const std::string& instead of copy
     static std::string safeFileName(const std::string& fileName){
 
         // Path Traversal Issue
@@ -53,7 +52,7 @@ public:
         safeFileName =  (lastSeperator != std::string::npos) ? (fileName.substr(lastSeperator + 1)): fileName;
 
         // ADS Issue solution
-        safeFileName = (safeFileName.find(':') != std::string::npos) ? throw std::runtime_error("[!] Unsupported file name format...\nTerminating the process...\n"): safeFileName;
+        safeFileName = (safeFileName.find(':') != std::string::npos) ? throw std::runtime_error("[!] Unsupported file name format...\n"): safeFileName;
 
         // TODO(v0.4.0): switch to whitelist; reject control chars (ASCII 0-31) and trailing spaces
         safeFileName =  (safeFileName.find('*') != std::string::npos) ||
@@ -61,7 +60,7 @@ public:
                         (safeFileName.find('|') != std::string::npos) ||
                         (safeFileName.find('"') != std::string::npos) ||
                         (safeFileName.find('>') != std::string::npos) ||
-                        (safeFileName.find('?') != std::string::npos)  ? throw std::runtime_error("[!] Unsupported file name format...\nTerminating the process...\n") : safeFileName;
+                        (safeFileName.find('?') != std::string::npos)  ? throw std::runtime_error("[!] Unsupported file name format...\n") : safeFileName;
         
         // Zero Byte Injection solution
         safeFileName = (safeFileName.find('\0') != std::string::npos) ? throw std::runtime_error("[!] Zero Byte Injection Detected!!!..."): safeFileName;
@@ -69,7 +68,7 @@ public:
         // Path Manipulation solution
         safeFileName = (safeFileName.empty()) ? throw std::runtime_error("[!] Empty File Name Detected!!!..."): safeFileName;
 
-        safeFileName = (safeFileName[0] == '.' || safeFileName.back() == '.') ? throw std::runtime_error("[!] Unsupported file name format...\nTerminating the process...\n"): safeFileName; 
+        safeFileName = (safeFileName[0] == '.' || safeFileName.back() == '.') ? throw std::runtime_error("[!] Unsupported file name format...\n"): safeFileName; 
 
         return safeFileName;
     }
@@ -357,6 +356,16 @@ bool receiver(uint16_t port){
         return false;
     }
     
+
+    constexpr uint64_t MAX_FILE_SIZE = 10ULL * 1024 * 1024* 1024; 
+
+    if(header.file_size > MAX_FILE_SIZE){
+        std::cerr << "[!] File size exceeds limit: " << header.file_name_len << "\n";
+        closesocket(client_sock);
+        closesocket(sock);
+        return false;
+    }
+
     std::string filename(header.file_name_len, '\0');
         // Read the file name
         
@@ -372,12 +381,12 @@ bool receiver(uint16_t port){
 
 
 
-    // (v0.3.0): catch exceptions from safeFileName (uncaught throw -> DoS)
+    // catch exceptions from safeFileName (uncaught throw -> DoS)
     std::string safeFName;
     try{
         safeFName = File::safeFileName(filename);
     } catch (const std::exception& e){
-        std::cerr << "[!] Risky file name detected [!]\nTerminating the process...\n";
+        std::cerr << e.what() << "\nRejecting connection...\n";
         closesocket(client_sock);
         closesocket(sock); 
         return false;
