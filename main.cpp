@@ -9,9 +9,85 @@
 // Network
 #include <winsock2.h>
 #include <ws2tcpip.h>   
+#include <bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
+
+// Testing
+#include <iomanip>
 
 // Error Handling
 #include <stdexcept>
+
+
+
+// (v0.4.0): SHA-256 integrity check (unused)
+class Sha256
+{
+public: 
+    Sha256(){
+        NTSTATUS status;  
+        status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+        if (!BCRYPT_SUCCESS(status)) {
+            ok = false;
+            return;
+        }
+
+        status = BCryptCreateHash(hAlg, &hHash, nullptr, 0, nullptr, 0, 0);
+        if (!BCRYPT_SUCCESS(status)) {
+            // If it fails , close hAlg
+            BCryptCloseAlgorithmProvider(hAlg, 0);
+            hAlg = nullptr;
+            ok = false;
+            return;
+        }
+
+        ok = true;
+    };
+    ~Sha256(){
+        if (hHash) BCryptDestroyHash(hHash);
+        if (hAlg)  BCryptCloseAlgorithmProvider(hAlg, 0);
+    }
+
+    Sha256(const Sha256&) = delete;
+    Sha256&operator = (const Sha256&) = delete;
+
+    bool valid() const { return ok; } 
+
+    bool update(const char* data, size_t len) {
+        // If its not valid do not process
+        if (!ok) return false;  
+    
+        // Give data and converted parameters to Windows API
+        NTSTATUS status = BCryptHashData(
+            hHash, 
+            const_cast<PUCHAR>(reinterpret_cast<const unsigned char*>(data)), // or directly reinterpret_cast<PUCHAR>(const_cast<char*>(data))
+            static_cast<ULONG>(len), 
+            0
+        );
+
+        // Is the process succesful ? 
+        return BCRYPT_SUCCESS(status);
+    }
+
+    bool finish(std::array<uint8_t, 32>& out) {
+        if (!ok) return false;
+
+        // Finish the process and write the result into out
+        NTSTATUS status = BCryptFinishHash(
+            hHash, 
+            out.data(), 
+            32, 
+            0
+        );
+
+        return BCRYPT_SUCCESS(status);
+    }
+
+private: 
+    BCRYPT_ALG_HANDLE  hAlg = nullptr;
+    BCRYPT_HASH_HANDLE hHash = nullptr;
+    bool ok = false;
+};
 
 class File
 {
@@ -21,9 +97,11 @@ public:
     {   
         std::uint64_t file_size {0}; 
         std::uint32_t file_name_len {0};
-        std::array<uint32_t, 32> sum{};  // TODO(v0.4.0): SHA-256 integrity check (unused)
+         
     };
     #pragma pack(pop)
+
+    static_assert(sizeof(File::Header) == 12, "Header must be 12 bytes");
 
     #pragma pack(push, 1)
     struct MetaData
@@ -513,8 +591,7 @@ bool send_file(const std::string& filepath){
 };
 
 int main(int argc, char* argv[])
-{
-
+{   
     // 1. Initializing Winsock 
     WSADATA wsa;
     if(WSAStartup(MAKEWORD(2,2), &wsa) != 0){
