@@ -21,6 +21,8 @@
 //hex 
 #include <sstream>
 
+#include <cctype> 
+
 
 // SHA-256 wrapper around Windows CNG (bcrypt). One object = one hash.
 class Sha256
@@ -126,40 +128,63 @@ public:
     
     MetaData metadata;
 
+    static bool is_allowed_char(unsigned char c){
+        if(std::isalnum(c)) return true;
+        switch (c){
+            case ' ': case '.': case '-': case '_':
+            case '(': case ')': case '@': case ',':
+            case '[': case ']':
+                return true;
+            default:
+                return false;
+        }
+        
+        
+    }
 
-    // File name security controller 
+
+        // File name security controller.
+    // Everything here comes from the network and is untrusted.
     static std::string safeFileName(const std::string& fileName){
 
-        // Path Traversal Issue
-        size_t lastSeperator = std::string::npos; // No position
-        std::string safeFileName; 
+        // 1. Strip directory components (path traversal: ../ and ..\)
+        size_t lastSep = fileName.find_last_of("/\\");
+        std::string name = (lastSep != std::string::npos) ? fileName.substr(lastSep + 1) : fileName;
 
-       
-        lastSeperator = fileName.find_last_of("/\\");
+        // 2. Nothing left after stripping (e.g. "uploads/")
+        if (name.empty())
+            throw std::runtime_error("[!] Empty file name");
 
-        // Path Traverse solution
-        safeFileName =  (lastSeperator != std::string::npos) ? (fileName.substr(lastSeperator + 1)): fileName;
+        // 3. Whitelist: check every byte
+        for (unsigned char c : name) {
+            if (c == '\0')
+                throw std::runtime_error("[!] Null byte injection detected");
+            if (c == ':')
+                throw std::runtime_error("[!] ADS attempt detected (':' in file name)");
+            if (c < 0x20 || c == 0x7F) {
+                std::ostringstream m;
+                m << "[!] Control character in file name (0x" << std::hex << std::setw(2)
+                  << std::setfill('0') << static_cast<int>(c) << ")";
+                throw std::runtime_error(m.str());
+            }
+            if (!is_allowed_char(c)) {
+                std::ostringstream m;
+                m << "[!] Disallowed character in file name (0x" << std::hex << std::setw(2)
+                  << std::setfill('0') << static_cast<int>(c) << ")";
+                throw std::runtime_error(m.str());
+            }
+        }
 
-        // ADS Issue solution
-        safeFileName = (safeFileName.find(':') != std::string::npos) ? throw std::runtime_error("[!] Unsupported file name format...\n"): safeFileName;
+        // 4. Leading dot: hidden files, "." and ".."
+        if (name.front() == '.')
+            throw std::runtime_error("[!] File name starts with '.'");
 
-        // TODO(v0.5.1): switch to whitelist; reject control chars (ASCII 0-31) and trailing spaces
-        safeFileName =  (safeFileName.find('*') != std::string::npos) ||
-                        (safeFileName.find('<') != std::string::npos) ||
-                        (safeFileName.find('|') != std::string::npos) ||
-                        (safeFileName.find('"') != std::string::npos) ||
-                        (safeFileName.find('>') != std::string::npos) ||
-                        (safeFileName.find('?') != std::string::npos)  ? throw std::runtime_error("[!] Unsupported file name format...\n") : safeFileName;
-        
-        // Zero Byte Injection solution
-        safeFileName = (safeFileName.find('\0') != std::string::npos) ? throw std::runtime_error("[!] Zero Byte Injection Detected!!!..."): safeFileName;
-        
-        // Path Manipulation solution
-        safeFileName = (safeFileName.empty()) ? throw std::runtime_error("[!] Empty File Name Detected!!!..."): safeFileName;
+        // 5. Trailing dot or space: Windows silently strips them,
+        //    so the name on disk would differ from the name in the log
+        if (name.back() == '.' || name.back() == ' ')
+            throw std::runtime_error("[!] File name ends with '.' or space");
 
-        safeFileName = (safeFileName[0] == '.' || safeFileName.back() == '.') ? throw std::runtime_error("[!] Unsupported file name format...\n"): safeFileName; 
-
-        return safeFileName;
+        return name;
     }
 
 
@@ -466,7 +491,7 @@ bool receiver(uint16_t port){
         }
     
     
-    std::cout << "[+] Incoming file: " << filename << " (" << header.file_size << " byte)\n";
+    
 
 
 
@@ -480,7 +505,7 @@ bool receiver(uint16_t port){
         closesocket(sock); 
         return false;
     }
-    
+    std::cout << "[+] Incoming file: " << safeFName << " (" << header.file_size << " byte)\n";
 
     Sha256 hasher;
     if (!hasher.valid()){
@@ -648,6 +673,8 @@ bool send_file(const std::string& filepath){
             std::cerr<< "[!] SHA-256 update failed\n";
             return false;
         }
+
+
 
         // Send from RAM to network
         if(!send_all(sock, buffer.data(), to_send)){
