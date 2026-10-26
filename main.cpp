@@ -18,9 +18,11 @@
 // Error Handling
 #include <stdexcept>
 
+//hex 
+#include <sstream>
 
 
-// (v0.4.0): SHA-256 integrity check (unused)
+// SHA-256 wrapper around Windows CNG (bcrypt). One object = one hash.
 class Sha256
 {
 public: 
@@ -80,7 +82,16 @@ public:
             0
         );
 
-        return BCRYPT_SUCCESS(status);
+        if (!BCRYPT_SUCCESS(status)) return false;
+        ok = false;   // hash object can't be reused after finish
+        return true;
+    }
+
+    static std::string to_hex(const std::array<uint8_t, 32>& h) {
+        std::ostringstream oss;
+        for(uint8_t b : h)
+            oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+        return oss.str();
     }
 
 private: 
@@ -132,7 +143,7 @@ public:
         // ADS Issue solution
         safeFileName = (safeFileName.find(':') != std::string::npos) ? throw std::runtime_error("[!] Unsupported file name format...\n"): safeFileName;
 
-        // TODO(v0.4.0): switch to whitelist; reject control chars (ASCII 0-31) and trailing spaces
+        // TODO(v0.5.1): switch to whitelist; reject control chars (ASCII 0-31) and trailing spaces
         safeFileName =  (safeFileName.find('*') != std::string::npos) ||
                         (safeFileName.find('<') != std::string::npos) ||
                         (safeFileName.find('|') != std::string::npos) ||
@@ -438,7 +449,7 @@ bool receiver(uint16_t port){
     constexpr uint64_t MAX_FILE_SIZE = 10ULL * 1024 * 1024* 1024; 
 
     if(header.file_size > MAX_FILE_SIZE){
-        std::cerr << "[!] File size exceeds limit: " << header.file_name_len << "\n";
+        std::cerr << "[!] File size exceeds limit: " << header.file_size << "\n";
         closesocket(client_sock);
         closesocket(sock);
         return false;
@@ -471,15 +482,37 @@ bool receiver(uint16_t port){
     }
     
 
-   
+    Sha256 hasher;
+    if (!hasher.valid()){
+        std::cerr << "[!] SHA-256 could not be initialized\n";
+        closesocket(client_sock);
+        closesocket(sock);
+        sock = INVALID_SOCKET;
+        return false; 
+    }
+
+    std::string out_path = "received_" + safeFName;
     
-    std::ofstream out_file("received_" + safeFName, std::ios::binary);
+    std::ofstream out_file(out_path, std::ios::binary);
     if(!out_file.is_open()){
         std::cerr << "[!] The file couldnt be written to the disk...\n";
         closesocket(client_sock);
         closesocket(sock);
         return false;
     }
+    // Single exit path for any faiuler after the file is created:
+    // close, delete the partial / corrupted file, close socket.
+    auto abort_transfer = [&](const char* msg){
+        std::cerr << msg;
+        out_file.close();
+        std::error_code ec;
+        std::filesystem::remove(out_path, ec);
+        closesocket(client_sock);
+        closesocket(sock);
+        sock = INVALID_SOCKET;
+        return false;
+    };
+
     // Get 64 KB file chunk by chunk and write to the disk
     constexpr size_t CHUNK_SIZE = 64 * 1024;
     std::vector<char> chunk_buffer(CHUNK_SIZE);
@@ -489,20 +522,41 @@ bool receiver(uint16_t port){
         size_t to_read = (bytes_remaining < CHUNK_SIZE) ? static_cast<size_t>(bytes_remaining) : CHUNK_SIZE;
 
         if (!recv_all(client_sock, chunk_buffer.data(), to_read)){
-            std::cerr << "[!] Data was lost during transmission!\n";
-            out_file.close();
-            closesocket(client_sock);
-            closesocket(sock);
-            return false;
+            return abort_transfer("[!] Data was lost during transmission, partial file deleted\n");
         }
 
         out_file.write(chunk_buffer.data(), to_read);
+        if(!out_file){
+            return abort_transfer("[!] Disk write error, file deleted\n");
+        }
+
+        if(!hasher.update(chunk_buffer.data(), to_read))
+            return abort_transfer("[!] SHA-256 updated failed\n");
+
         bytes_remaining -= to_read;
     }
 
-    std::cout << "[+] The file succesfull completed and saved!\n";
+    // Trailer: receive sender's hash and compare with receivers hash
+    std::array<uint8_t, 32> received_hash{};
+     if (!recv_all(client_sock, reinterpret_cast<char*>(received_hash.data()), received_hash.size()))
+        return abort_transfer("[!] Hash trailer could not be received, file deleted\n");
+    
+    std::array<uint8_t, 32> computed_hash{};
+    if(!hasher.finish(computed_hash)){
+        return abort_transfer("[!] SHA-256 could not be finalized\n");
+    }
+
+    if(computed_hash != received_hash){
+        std::cerr << "[!] Expected: " << Sha256::to_hex(received_hash) << "\n"
+                  << "[!] Computed: " << Sha256::to_hex(computed_hash) <<"\n";
+        return abort_transfer("[!] Integrity check failed, file deleted\n");
+    }
 
     out_file.close();
+    std::cout << "[+] The file was received and verified: "<< out_path << "\n";
+    std::cout << "[+] SHA-256: "<< Sha256::to_hex(computed_hash)<< "\n";
+    
+    
     closesocket(client_sock);
     closesocket(sock);
     sock = INVALID_SOCKET;
@@ -541,6 +595,15 @@ bool send_file(const std::string& filepath){
     std::string filename = p.filename().string();
     uint32_t filename_len = static_cast<uint32_t>(filename.length());
 
+    Sha256 hasher;
+    if(!hasher.valid()){
+        std::cerr << "[!] SHA-256 could not be initialized\n";
+        return false;
+    }
+
+    // Before sending header if we not calculate the hash, we should stop 
+    // before transfer process.
+
     // Fill FileHeader and send
     File::Header header{};
     header.file_size = file_size;
@@ -574,9 +637,19 @@ bool send_file(const std::string& filepath){
 
         // Read from disk to RAM 
         in_file.read(buffer.data(), to_send);
+        
+        if (in_file.gcount() != static_cast<std::streamsize>(to_send)){
+            std::cerr << "[!] File read error (file change or unreadable)\n";
+            return false;
+        }
+
+        // hash exactly the bytes we are about to send
+        if (!hasher.update(buffer.data(), to_send)){
+            std::cerr<< "[!] SHA-256 update failed\n";
+            return false;
+        }
 
         // Send from RAM to network
-
         if(!send_all(sock, buffer.data(), to_send)){
             std::cerr << "[!] Connection lost during data transmittion... \n";
             return false;
@@ -585,7 +658,20 @@ bool send_file(const std::string& filepath){
         bytes_remaining -= to_send;
     }
 
+    // Trailer: send the SHA-256 of everything we sent
+    std::array<uint8_t, 32> digest{};
+    if(!hasher.finish(digest)){
+        std::cerr << "[!] SHA-256 could not be finazlied\n";
+        return false;
+    }
+
+    if(!send_all(sock, reinterpret_cast<const char*>(digest.data()), digest.size())){
+        std::cerr << "[!] Hash trailer could not be sent\n ";
+        return false;
+    }
+
     std::cout << "[+] The file was sent succesfull: " << filename<<"( " << file_size << "byte )\n";
+    std::cout << "[+] SHA-256: " << Sha256::to_hex(digest) << "\n";
     return true;
 }
 };
