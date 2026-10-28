@@ -1,0 +1,18 @@
+# Build output
+*.exe
+*.obj
+*.o
+*.pdb
+build/
+
+# Test and sample files
+*.mp4
+received_*
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vs/
+.vscode/
