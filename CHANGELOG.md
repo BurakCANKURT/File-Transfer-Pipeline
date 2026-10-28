@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
+## [1.0.0] - 2026-10-28
+### Added
+- README with protocol description, security model and test results.
+- MIT license.
+### Fixed
+- Log messages now match the documentation.
 
 ## [0.5.2] - 2026-10-27
 ### Fixed
