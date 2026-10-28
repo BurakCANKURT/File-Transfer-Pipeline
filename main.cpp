@@ -505,7 +505,7 @@ bool receiver(uint16_t port){
         closesocket(sock); 
         return false;
     }
-    std::cout << "[+] Incoming file: " << safeFName << " (" << header.file_size << " byte)\n";
+    std::cout << "[+] Incoming file: " << safeFName << " (" << header.file_size << " bytes)\n";
 
     Sha256 hasher;
     if (!hasher.valid()){
@@ -697,7 +697,7 @@ bool send_file(const std::string& filepath){
         return false;
     }
 
-    std::cout << "[+] The file was sent succesfull: " << filename<<"( " << file_size << "byte )\n";
+    std::cout << "[+] The file was sent successfully: " << filename << " (" << file_size << " bytes)\n";
     std::cout << "[+] SHA-256: " << Sha256::to_hex(digest) << "\n";
     return true;
 }
@@ -715,7 +715,7 @@ int main(int argc, char* argv[])
     if (argc < 2){
         std::cout << "Usage: \n" 
         << "Server mode: " <<argv[0] << " server <port>\n"
-        << "Client mode: " << argv[0] << " client <ip><port><file_path>\n";
+        << "Client mode: " << argv[0] << " client <ip> <port> <file_path>\n";
         WSACleanup();
         return 1;
     }
